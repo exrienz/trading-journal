@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from datetime import datetime, date
 from functools import wraps
 import hashlib
+import logging
 
 import requests
 import jwt
@@ -10,6 +11,10 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import case, func
 from urllib.parse import quote_plus
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # ─── Load environment variables ────────────────────────────────────────────────
 load_dotenv()
@@ -31,6 +36,10 @@ app.config['GEMINI_API_KEY']                = os.getenv('GEMINI_API_KEY')
 
 # ─── Initialize database ───────────────────────────────────────────────────────
 db = SQLAlchemy(app)
+
+# Create all database tables
+with app.app_context():
+    db.create_all()
 
 # ─── Models ─────────────────────────────────────────────────────────────────────
 class User(db.Model):
@@ -102,7 +111,28 @@ def call_gemini(prompt_text):
 # ─── Routes ────────────────────────────────────────────────────────────────────
 @app.route('/health')
 def health():
-    return jsonify({'status':'ok'}), 200
+    try:
+        # Check if tables exist
+        tables = db.engine.table_names()
+        logger.debug(f"Database tables: {tables}")
+        
+        # Try to query the User table
+        user_count = User.query.count()
+        logger.debug(f"Number of users in database: {user_count}")
+        
+        return jsonify({
+            'status': 'ok',
+            'database': {
+                'tables': tables,
+                'user_count': user_count
+            }
+        }), 200
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
 
 @app.route('/')
 def index():
@@ -111,25 +141,47 @@ def index():
 @app.route('/register', methods=['GET','POST'])
 def register():
     if request.method=='POST':
-        user = User(username=request.form['username'])
-        user.set_password(request.form['password'])
-        db.session.add(user)
         try:
+            username = request.form['username']
+            password = request.form['password']
+            logger.debug(f"Attempting to register user: {username}")
+            
+            # Check if user already exists
+            existing_user = User.query.filter_by(username=username).first()
+            if existing_user:
+                logger.debug(f"User {username} already exists")
+                return jsonify({'error': 'Username already exists'}), 400
+            
+            user = User(username=username)
+            user.set_password(password)
+            db.session.add(user)
             db.session.commit()
+            logger.debug(f"Successfully registered user: {username}")
             return redirect(url_for('login'))
         except Exception as e:
+            logger.error(f"Error during registration: {str(e)}")
             db.session.rollback()
-            return jsonify({'error': 'Username already exists'}), 400
+            return jsonify({'error': str(e)}), 500
     return render_template('register.html')
 
 @app.route('/login', methods=['GET','POST'])
 def login():
     if request.method=='POST':
-        user = User.query.filter_by(username=request.form['username']).first()
-        if user and user.check_password(request.form['password']):
-            token = generate_token(user.id)
-            return jsonify({'token':token})
-        return jsonify({'error':'Bad credentials'}), 401
+        try:
+            username = request.form['username']
+            password = request.form['password']
+            logger.debug(f"Attempting login for user: {username}")
+            
+            user = User.query.filter_by(username=username).first()
+            if user and user.check_password(password):
+                token = generate_token(user.id)
+                logger.debug(f"Successful login for user: {username}")
+                return jsonify({'token': token})
+            logger.debug(f"Failed login attempt for user: {username}")
+            return jsonify({'error': 'Bad credentials'}), 401
+        except Exception as e:
+            logger.error(f"Error during login: {str(e)}")
+            return jsonify({'error': str(e)}), 500
     return render_template('login.html')
 
 @app.route('/deposit', methods=['POST'])
@@ -216,6 +268,4 @@ def dashboard():
 
 # ─── Run the app ───────────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    with app.app_context():
-        db.create_all()  # Create tables only when running the app
     app.run(host='0.0.0.0', debug=True)
