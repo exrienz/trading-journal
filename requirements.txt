@@ -4,3 +4,4 @@ PyMySQL
 python-dotenv
 PyJWT
 requests
+cryptography
