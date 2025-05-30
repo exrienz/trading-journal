@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row mb-4">
+  <div class="col">
+    <h4>Balance: {{ active_balance }}</h4>
+    <p>Deposits: {{ deposit_amt }} | Withdrawals: {{ withdraw_amt }} | P/L: {{ total_pl }}</p>
+  </div>
+</div>
+<div class="row">
+  <div class="col-md-8"><div id="calendar"></div></div>
+  <div class="col-md-4">
+    <h5>Trading Tips</h5><p>{{ tips }}</p>
+    <h5>Lessons Learned</h5><p>{{ lessons }}</p>
+  </div>
+</div>
+<script>
+  flatpickr("#calendar", {
+    inline:true,
+    onChange: (d)=>{ if(d.length) window.location=`/daily/${d[0].toISOString().slice(0,10)}` }
+  });
+</script>
+{% endblock %}
