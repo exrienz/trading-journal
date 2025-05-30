@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime, date
 from functools import wraps
+import hashlib
 
 import requests
 import jwt
@@ -30,13 +31,18 @@ app.config['GEMINI_API_KEY']                = os.getenv('GEMINI_API_KEY')
 
 # ─── Initialize database ───────────────────────────────────────────────────────
 db = SQLAlchemy(app)
-db.create_all()  # auto-create tables on startup
 
 # ─── Models ─────────────────────────────────────────────────────────────────────
 class User(db.Model):
     id            = db.Column(db.Integer, primary_key=True)
     username      = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
+
+    def set_password(self, password):
+        self.password_hash = hashlib.sha256(password.encode()).hexdigest()
+
+    def check_password(self, password):
+        return self.password_hash == hashlib.sha256(password.encode()).hexdigest()
 
 class Transaction(db.Model):
     id        = db.Column(db.Integer, primary_key=True)
@@ -82,11 +88,16 @@ GEMINI_URL = (
     "gemini-2.0-flash:generateContent"
 )
 def call_gemini(prompt_text):
-    payload = {"contents":[{"parts":[{"text": prompt_text}]}]}
-    params  = {'key': app.config['GEMINI_API_KEY']}
-    r       = requests.post(GEMINI_URL, params=params, json=payload)
-    r.raise_for_status()
-    return r.json()['candidates'][0]['content']
+    if not app.config['GEMINI_API_KEY']:
+        return "Gemini API key not configured"
+    try:
+        payload = {"contents":[{"parts":[{"text": prompt_text}]}]}
+        params  = {'key': app.config['GEMINI_API_KEY']}
+        r       = requests.post(GEMINI_URL, params=params, json=payload)
+        r.raise_for_status()
+        return r.json()['candidates'][0]['content']
+    except Exception as e:
+        return f"Error calling Gemini API: {str(e)}"
 
 # ─── Routes ────────────────────────────────────────────────────────────────────
 @app.route('/health')
@@ -100,20 +111,22 @@ def index():
 @app.route('/register', methods=['GET','POST'])
 def register():
     if request.method=='POST':
-        user = User(
-            username=request.form['username'],
-            password_hash=request.form['password']
-        )
+        user = User(username=request.form['username'])
+        user.set_password(request.form['password'])
         db.session.add(user)
-        db.session.commit()
-        return redirect(url_for('login'))
+        try:
+            db.session.commit()
+            return redirect(url_for('login'))
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'error': 'Username already exists'}), 400
     return render_template('register.html')
 
 @app.route('/login', methods=['GET','POST'])
 def login():
     if request.method=='POST':
         user = User.query.filter_by(username=request.form['username']).first()
-        if user and user.password_hash==request.form['password']:
+        if user and user.check_password(request.form['password']):
             token = generate_token(user.id)
             return jsonify({'token':token})
         return jsonify({'error':'Bad credentials'}), 401
@@ -203,4 +216,6 @@ def dashboard():
 
 # ─── Run the app ───────────────────────────────────────────────────────────────
 if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()  # Create tables only when running the app
     app.run(host='0.0.0.0', debug=True)
